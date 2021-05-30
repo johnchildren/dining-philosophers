@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, TryLockError},
     thread,
     time::Duration,
 };
@@ -28,7 +28,43 @@ impl Philosopher {
         std::thread::sleep(Duration::from_nanos(thread_rng().gen::<u64>() % 10))
     }
 
-    fn with_left_fork<F, R>(&self, f: F) -> R
+    fn with_left_fork<F, R>(&self, f: F) -> Result<R, ForkInUse>
+    where
+        F: FnOnce(&Fork) -> Result<R, ForkInUse>,
+    {
+        match self.left_fork.try_lock() {
+            Err(TryLockError::Poisoned(_)) => {
+                panic!("someone poisoned the fork!")
+            }
+            Err(TryLockError::WouldBlock) => Err(ForkInUse),
+            Ok(fork) => {
+                self.exclaim("picked up the left fork");
+                let res = f(&fork);
+                self.exclaim("dropped the right fork");
+                res
+            }
+        }
+    }
+
+    fn with_right_fork<F, R>(&self, f: F) -> Result<R, ForkInUse>
+    where
+        F: FnOnce(&Fork) -> Result<R, ForkInUse>,
+    {
+        match self.right_fork.try_lock() {
+            Err(TryLockError::Poisoned(_)) => {
+                panic!("someone poisoned the fork!")
+            }
+            Err(TryLockError::WouldBlock) => Err(ForkInUse),
+            Ok(fork) => {
+                self.exclaim("picked up the right fork");
+                let res = f(&fork);
+                self.exclaim("dropped the right fork");
+                res
+            }
+        }
+    }
+
+    fn with_left_fork_blocking<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&Fork) -> R,
     {
@@ -45,7 +81,7 @@ impl Philosopher {
         }
     }
 
-    fn with_right_fork<F, R>(&self, f: F) -> R
+    fn with_right_fork_blocking<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&Fork) -> R,
     {
@@ -74,8 +110,27 @@ impl Philosopher {
     fn dine(&self) {
         self.exclaim("I have sat down");
         for _ in 0..1000000 {
-            self.with_left_fork(|left_fork| {
-                self.with_right_fork(|right_fork| {
+            if self
+                .with_left_fork(|left_fork| {
+                    self.with_right_fork(|right_fork| {
+                        self.exclaim("Time to chow down!");
+                        self.eat(left_fork, right_fork);
+                        Ok(())
+                    })
+                })
+                .is_err()
+            {
+                self.exclaim("I can't eat, so I'll think instead");
+                self.think();
+            }
+        }
+    }
+
+    fn dine_blocking(&self) {
+        self.exclaim("I have sat down");
+        for _ in 0..1000000 {
+            self.with_left_fork_blocking(|left_fork| {
+                self.with_right_fork_blocking(|right_fork| {
                     self.exclaim("Time to chow down!");
                     self.eat(left_fork, right_fork);
                 })
